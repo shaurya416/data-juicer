@@ -248,7 +248,11 @@ class Exporter:
                 # If meta/stats were serialized as JSON strings (e.g. \\uXXXX),
                 # parse back to dict so to_json(force_ascii=False) writes UTF-8.
                 ds_stats = Exporter._ensure_meta_stats_dicts_for_export(ds_stats)
-                stats_file = export_path.replace("." + suffix, "_stats.jsonl")
+                # Derive from the path's own extension, so the stats file is
+                # never the export path itself (e.g. an upper-case extension
+                # or one that differs from export_type) and is not then
+                # overwritten by the dataset export.
+                stats_file = os.path.splitext(export_path)[0] + "_stats.jsonl"
                 export_kwargs = {"num_proc": self.num_proc if self.export_in_parallel else 1}
                 # Add storage_options if available (for S3/HDFS export)
                 if self.storage_options is not None:
@@ -352,21 +356,28 @@ class Exporter:
                 # export dataset into multiple shards using multiprocessing
                 logger.info(f"Start to exporting to {num_shards} shards.")
                 pool = Pool(self.num_proc)
+                async_results = []
                 for i in range(num_shards):
                     export_kwargs = {"num_proc": 1}  # Each shard export uses single process
                     # Add storage_options if available (for S3/HDFS export)
                     if self.storage_options is not None:
                         export_kwargs["storage_options"] = self.storage_options
-                    pool.apply_async(
-                        export_method,
-                        args=(
-                            shards[i],
-                            filenames[i],
-                        ),
-                        kwds=export_kwargs,
+                    async_results.append(
+                        pool.apply_async(
+                            export_method,
+                            args=(
+                                shards[i],
+                                filenames[i],
+                            ),
+                            kwds=export_kwargs,
+                        )
                     )
                 pool.close()
                 pool.join()
+                # Re-raise any error from a shard worker; otherwise a failed
+                # shard is silently missing from an export reported as done.
+                for res in async_results:
+                    res.get()
                 # Encrypt each local shard after all shards are written.
                 for fname in filenames:
                     self._encrypt_local_file(fname)

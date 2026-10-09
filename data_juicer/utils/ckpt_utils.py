@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Any, List, Optional, Tuple
@@ -195,6 +196,11 @@ class CheckpointManager(CheckpointManagerBase):
         else:
             # Empty dataset: skip save_to_disk to avoid ZeroDivisionError in
             # datasets._estimate_nbytes when the Arrow table has 0 rows.
+            # Drop any dataset left by an earlier save: the op record below
+            # marks the recorded ops as done, so keeping it would let the
+            # next run skip them and resume from that stale dataset.
+            if os.path.isdir(self.ckpt_ds_dir):
+                shutil.rmtree(self.ckpt_ds_dir)
             logger.warning("Checkpoint skipped: dataset is empty.")
 
         with open(self.ckpt_op_record, "w") as fout:

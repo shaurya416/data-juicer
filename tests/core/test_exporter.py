@@ -176,6 +176,46 @@ class ExporterTest(DataJuicerTestCaseBase):
         self.assertTrue(os.path.exists(add_suffix_to_filename(export_path, '-00-of-01')))
         self.assertTrue(os.path.exists(add_suffix_to_filename(export_path, '_stats')))
 
+    def test_export_multiple_shards_raises_when_a_shard_fails(self):
+        export_path = os.path.join(self.work_dir, 'shard_fail', 'test.jsonl')
+        exporter = Exporter(
+            export_path=export_path,
+            export_shard_size=1024,
+            num_proc=2,
+            export_stats=False,
+        )
+        # 4 rows of ~2KB each with 1KiB shards -> 4 shards, one row each
+        dataset = Dataset.from_list([{'text': str(i) * 2000} for i in range(4)])
+        # occupy the path of the second shard so that writing it fails
+        os.makedirs(add_suffix_to_filename(export_path, '-01-of-04'))
+
+        with self.assertRaises(IsADirectoryError):
+            exporter.export(dataset)
+
+    def test_stats_file_kept_with_upper_case_extension(self):
+        export_path = os.path.join(self.work_dir, 'upper', 'test.JSONL')
+        exporter = Exporter(export_path=export_path)
+        exporter.export(self.test_data)
+
+        stats_path = os.path.join(self.work_dir, 'upper', 'test_stats.jsonl')
+        self.assertTrue(os.path.exists(stats_path))
+        with jl.open(stats_path) as reader:
+            self.assertEqual([row[Fields.stats]['a'] for row in reader], [1, 3, 5])
+        with jl.open(export_path) as reader:
+            self.assertEqual([row['text'] for row in reader], ['text 1', 'text 2', 'text 3'])
+
+    def test_stats_file_kept_when_export_type_differs_from_extension(self):
+        export_path = os.path.join(self.work_dir, 'typed', 'test.txt')
+        exporter = Exporter(export_path=export_path, export_type='jsonl')
+        exporter.export(self.test_data)
+
+        stats_path = os.path.join(self.work_dir, 'typed', 'test_stats.jsonl')
+        self.assertTrue(os.path.exists(stats_path))
+        with jl.open(stats_path) as reader:
+            self.assertEqual([row[Fields.stats]['a'] for row in reader], [1, 3, 5])
+        with jl.open(export_path) as reader:
+            self.assertEqual([row['text'] for row in reader], ['text 1', 'text 2', 'text 3'])
+
     def test_export_compute_stats(self):
         export_path = os.path.join(self.work_dir, 'stats', 'res.jsonl')
         exporter = Exporter(

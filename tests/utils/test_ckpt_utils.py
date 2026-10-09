@@ -583,6 +583,27 @@ class CkptUtilsEdgeCaseTest(DataJuicerTestCaseBase):
             ops = json.load(f)
         self.assertEqual(ops, [{"op_a": {}}])
 
+    def test_empty_checkpoint_does_not_resume_from_stale_dataset(self):
+        """An empty result must not leave an earlier dataset to resume from."""
+        ckpt_path = os.path.join(self.tmp_dir, "ckpt_stale")
+        process_list = [{"op_a": {}}, {"op_b": {}}]
+
+        # first run: op_a finished, op_b failed -> checkpoint after op_a
+        mgr = CheckpointManager(ckpt_path, original_process_list=process_list)
+        mgr.record(process_list[0])
+        mgr.save_checkpoint(NestedDataset.from_dict({"text": ["a", "b", "c"]}))
+
+        # second run resumes at op_b, which filters out every sample
+        mgr = CheckpointManager(ckpt_path, original_process_list=process_list)
+        self.assertEqual(mgr.get_left_process_list(), [{"op_b": {}}])
+        mgr.record(process_list[1])
+        mgr.save_checkpoint(NestedDataset.from_dict({"text": []}))
+
+        # third run must not skip all ops and reload the 3-sample dataset
+        mgr = CheckpointManager(ckpt_path, original_process_list=process_list)
+        self.assertFalse(mgr.ckpt_available)
+        self.assertEqual(mgr.get_left_process_list(), process_list)
+
     def test_should_checkpoint_unknown_strategy(self):
         """Unknown strategy logs warning and defaults to True."""
         mgr = RayCheckpointManager(
