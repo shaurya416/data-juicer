@@ -322,6 +322,7 @@ class CacheCompressManager:
 
         files_to_remove = []
         files_printed = set()
+        results = []
         if num_proc and num_proc > 1:
             pool = Pool(num_proc)
         for full_name in caches_to_compress:
@@ -339,12 +340,14 @@ class CacheCompressManager:
                 if formatted_cache_name not in files_printed:
                     logger.info(f"Compressing cache file to {formatted_cache_name}")
                 if num_proc and num_proc > 1:
-                    pool.apply_async(
-                        self.compress_manager.compress,
-                        args=(
-                            full_name,
-                            compress_filename,
-                        ),
+                    results.append(
+                        pool.apply_async(
+                            self.compress_manager.compress,
+                            args=(
+                                full_name,
+                                compress_filename,
+                            ),
+                        )
                     )
                 else:
                     self.compress_manager.compress(full_name, compress_filename)
@@ -356,6 +359,9 @@ class CacheCompressManager:
         if num_proc and num_proc > 1:
             pool.close()
             pool.join()
+            # re-raise any worker error before raw cache files are removed
+            for result in results:
+                result.get()
 
         # clean up raw cache file
         for file_path in files_to_remove:

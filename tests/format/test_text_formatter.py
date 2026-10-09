@@ -69,6 +69,54 @@ class TextFormatterTest(DataJuicerTestCaseBase):
         self.assertEqual(len(ds), 6)
         self.assertIn("text", list(ds.features.keys()))
 
+    def test_docx_extraction_failure_is_raised(self):
+        """A .docx file that cannot be extracted fails the load instead of
+        being dropped from the dataset."""
+        try:
+            from docx import Document
+            from docx.opc.exceptions import PackageNotFoundError
+        except ImportError:
+            self.skipTest("python-docx not installed")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            src_dir = os.path.join(tmp, "docs")
+            os.makedirs(src_dir)
+            doc = Document()
+            doc.add_paragraph("readable document")
+            doc.save(os.path.join(src_dir, "good.docx"))
+            with open(os.path.join(src_dir, "broken.docx"), "wb") as fh:
+                fh.write(b"not a docx file")
+
+            cache_home = os.path.join(tmp, "cache")
+            with patch("data_juicer.format.text_formatter.DATA_JUICER_CACHE_HOME", cache_home):
+                formatter = TextFormatter(src_dir, suffixes=[".docx"])
+                with self.assertRaises(PackageNotFoundError):
+                    formatter.load_dataset(num_proc=1)
+
+    def test_docx_load_ignores_text_extracted_for_another_dataset(self):
+        """Only the documents of the dataset being loaded are returned, even
+        after a dataset in another directory with the same name was loaded."""
+        try:
+            from docx import Document
+        except ImportError:
+            self.skipTest("python-docx not installed")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in ("first", "second"):
+                src_dir = os.path.join(tmp, name, "docs")
+                os.makedirs(src_dir)
+                doc = Document()
+                doc.add_paragraph(f"{name} dataset document")
+                doc.save(os.path.join(src_dir, f"{name}.docx"))
+
+            cache_home = os.path.join(tmp, "cache")
+            with patch("data_juicer.format.text_formatter.DATA_JUICER_CACHE_HOME", cache_home):
+                TextFormatter(os.path.join(tmp, "first", "docs"), suffixes=[".docx"]).load_dataset(num_proc=1)
+                formatter = TextFormatter(os.path.join(tmp, "second", "docs"), suffixes=[".docx"])
+                ds = formatter.load_dataset(num_proc=1)
+
+            self.assertEqual(ds["text"], ["second dataset document"])
+
 
 # ---------------------------------------------------------------------------
 # Tests for the decrypt_after_reading multiprocessing path
@@ -309,6 +357,49 @@ class TextFormatterDecryptTest(DataJuicerTestCaseBase):
                 except Exception:
                     pass  # May fail due to mock; we care Pool was created
                 mock_pool_cls.assert_called_once_with(2)
+
+    def test_load_dataset_decrypt_docx_end_to_end(self):
+        """Encrypted .docx files load with their decrypted text, and the
+        extracted plaintext is not left on disk."""
+        try:
+            from docx import Document
+        except ImportError:
+            self.skipTest("python-docx not installed")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            key_path = self._write_key_file(tmp)
+
+            enc_dir = os.path.join(tmp, "enc_docx")
+            os.makedirs(enc_dir)
+            expected_texts = []
+            for i in range(2):
+                doc = Document()
+                msg = f"Paragraph {i} content"
+                doc.add_paragraph(msg)
+                expected_texts.append(msg)
+                plain_path = os.path.join(tmp, f"doc{i}.docx")
+                doc.save(plain_path)
+                with open(plain_path, "rb") as fh:
+                    plaintext = fh.read()
+                with open(os.path.join(enc_dir, f"doc{i}.docx"), "wb") as fh:
+                    fh.write(self.f.encrypt(plaintext))
+
+            cache_home = os.path.join(tmp, "cache")
+            secure_tmp = os.path.join(tmp, "secure_tmp")
+            os.makedirs(secure_tmp)
+            with patch("data_juicer.format.text_formatter.DATA_JUICER_CACHE_HOME", cache_home):
+                with patch("data_juicer.utils.encryption_utils.get_secure_tmpdir", return_value=secure_tmp):
+                    formatter = TextFormatter(enc_dir, suffixes=[".docx"])
+                    ds = formatter.load_dataset(num_proc=1, global_cfg=_make_global_cfg(key_path))
+
+            self.assertEqual(sorted(ds["text"]), expected_texts)
+            leftover = [
+                os.path.join(root, name)
+                for base in (cache_home, secure_tmp)
+                for root, _, names in os.walk(base)
+                for name in names
+            ]
+            self.assertEqual(leftover, [])
 
 
 if __name__ == "__main__":

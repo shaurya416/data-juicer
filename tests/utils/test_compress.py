@@ -349,5 +349,34 @@ class CompressManagerRoundtripTest(DataJuicerTestCaseBase):
             self.assertEqual(result_content, original_content)
 
 
+class CacheCompressFailureTest(DataJuicerTestCaseBase):
+    """A cache file whose compression fails must not be removed."""
+
+    def test_multiprocess_compress_failure_keeps_raw_cache(self):
+        import tempfile
+        from types import SimpleNamespace
+        from data_juicer.utils.compress import CacheCompressManager
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            raw_files = []
+            for i in range(2):
+                raw_file = os.path.join(tmpdir, f'cache-{i}.arrow')
+                with open(raw_file, 'w') as f:
+                    f.write(f'arrow data {i}')
+                raw_files.append(raw_file)
+            # occupy the lock path of cache-1 so that compressing it fails
+            os.makedirs(os.path.join(tmpdir, 'cache-1.arrow.lock'))
+            prev_ds = SimpleNamespace(
+                cache_files=[{'filename': f} for f in raw_files])
+
+            manager = CacheCompressManager(compressor_format='zstd')
+            with self.assertRaises(IsADirectoryError):
+                manager.compress(prev_ds, None, num_proc=2)
+
+            # cache-1 has no compressed copy, so its raw file must survive
+            self.assertFalse(os.path.exists(raw_files[1] + '.zstd'))
+            self.assertTrue(os.path.exists(raw_files[1]))
+
+
 if __name__ == '__main__':
     unittest.main()

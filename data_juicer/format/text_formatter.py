@@ -1,3 +1,4 @@
+import base64
 import os
 from multiprocessing import Pool
 from typing import Optional
@@ -6,7 +7,6 @@ from datasets import Dataset, concatenate_datasets, load_dataset
 from loguru import logger
 
 from data_juicer.utils.cache_utils import DATA_JUICER_CACHE_HOME
-from data_juicer.utils.file_utils import find_files_with_suffix
 from data_juicer.utils.lazy_loader import LazyLoader
 
 from .formatter import FORMATTERS, LocalFormatter, add_suffixes, unify_format
@@ -21,14 +21,13 @@ def _decrypt_and_extract(data_file, fernet_key_bytes, extracted_filetype_path, f
     be dispatched to a :class:`multiprocessing.Pool`.
 
     :param data_file: path to the encrypted source file.
-    :param fernet_key_bytes: the raw Fernet key as :class:`bytes` (obtained
-        from ``fernet._signing_key`` + ``fernet._encryption_key`` is NOT
-        used here; instead we pass the original base-64 key bytes so that the
-        child process can reconstruct the :class:`~cryptography.fernet.Fernet`
-        instance independently).
+    :param fernet_key_bytes: the url-safe base64-encoded Fernet key as
+        :class:`bytes`, so that the child process can reconstruct the
+        :class:`~cryptography.fernet.Fernet` instance independently.
     :param extracted_filetype_path: directory where the extracted .txt file
         will be written.
     :param file_type: ``".docx"`` or ``".pdf"``.
+    :return: path to the written text file.
     """
     from cryptography.fernet import Fernet
 
@@ -43,9 +42,9 @@ def _decrypt_and_extract(data_file, fernet_key_bytes, extracted_filetype_path, f
     buf.name = data_file
 
     if file_type == ".docx":
-        extract_txt_from_docx(buf, extracted_filetype_path)
+        return extract_txt_from_docx(buf, extracted_filetype_path)
     else:
-        extract_txt_from_pdf(buf, extracted_filetype_path)
+        return extract_txt_from_pdf(buf, extracted_filetype_path)
 
 
 def extract_txt_from_docx(fn, tgt_path):
@@ -55,6 +54,7 @@ def extract_txt_from_docx(fn, tgt_path):
     :param fn: path to input docx file, or a file-like object (e.g.
         :class:`io.BytesIO`) for in-memory decrypted content.
     :param tgt_path: path to save text file.
+    :return: path to the written text file.
     """
     docx = LazyLoader("docx", "python-docx")
     doc = docx.Document(fn)
@@ -65,8 +65,10 @@ def extract_txt_from_docx(fn, tgt_path):
         base_fn = os.path.basename(fn.name).lower().replace(".docx", ".txt")
     else:
         base_fn = os.path.basename(fn).lower().replace(".docx", ".txt")
-    with open(os.path.join(tgt_path, base_fn), "w") as f:
+    txt_path = os.path.join(tgt_path, base_fn)
+    with open(txt_path, "w") as f:
         f.write("\n".join(text))
+    return txt_path
 
 
 def extract_txt_from_pdf(fn, tgt_path):
@@ -76,6 +78,7 @@ def extract_txt_from_pdf(fn, tgt_path):
     :param fn: path to input pdf file, or a file-like object (e.g.
         :class:`io.BytesIO`) for in-memory decrypted content.
     :param tgt_path: path to save text file.
+    :return: path to the written text file.
     """
     pdfplumber = LazyLoader("pdfplumber")
     with pdfplumber.open(fn) as pdf:
@@ -96,8 +99,10 @@ def extract_txt_from_pdf(fn, tgt_path):
             base_fn = os.path.basename(fn.name).lower().replace(".pdf", ".txt")
         else:
             base_fn = os.path.basename(fn).lower().replace(".pdf", ".txt")
-        with open(os.path.join(tgt_path, base_fn), "w") as f:
+        txt_path = os.path.join(tgt_path, base_fn)
+        with open(txt_path, "w") as f:
             f.write("\n".join(text))
+        return txt_path
 
 
 @FORMATTERS.register_module()
@@ -217,9 +222,19 @@ class TextFormatter(LocalFormatter):
         decrypt = global_cfg is not None and getattr(global_cfg, "decrypt_after_reading", False)
         fernet = None
         if decrypt:
-            from data_juicer.utils.encryption_utils import load_fernet_key
+            import tempfile
+
+            from data_juicer.utils.encryption_utils import (
+                get_secure_tmpdir,
+                load_fernet_key,
+            )
 
             fernet = load_fernet_key(getattr(global_cfg, "encryption_key_path", None))
+            # Text extracted from decrypted docx/pdf files is plaintext, so it
+            # goes to a temporary directory that is removed after loading
+            # instead of the persistent cache directory.
+            extract_tmp_dir = tempfile.TemporaryDirectory(dir=get_secure_tmpdir())
+            extracted_dataset_path = extract_tmp_dir.name
 
         # Resolve num_proc early so Pool() calls below use the correct value.
         _num_proc = self.kwargs.pop("num_proc", 1)
@@ -235,41 +250,52 @@ class TextFormatter(LocalFormatter):
 
                 extract_func = extract_txt_from_docx if file_type == ".docx" else extract_txt_from_pdf
 
+                results = []
                 if decrypt and fernet is not None:
                     # Decrypt each file in-memory and extract text in parallel.
-                    # BytesIO objects are not picklable, so we pass the raw
-                    # Fernet key bytes to each worker; the worker reconstructs
-                    # its own Fernet instance and decrypts independently.
-                    fernet_key_bytes = fernet._signing_key + fernet._encryption_key
+                    # BytesIO objects are not picklable, so we pass the
+                    # base64-encoded Fernet key to each worker; the worker
+                    # reconstructs its own Fernet instance and decrypts
+                    # independently.
+                    fernet_key_bytes = base64.urlsafe_b64encode(fernet._signing_key + fernet._encryption_key)
                     pool = Pool(num_proc)
                     for data_file in self.data_files[file_type]:
-                        pool.apply_async(
-                            func=_decrypt_and_extract,
-                            args=(
-                                data_file,
-                                fernet_key_bytes,
-                                extracted_filetype_path,
-                                file_type,
-                            ),
+                        results.append(
+                            pool.apply_async(
+                                func=_decrypt_and_extract,
+                                args=(
+                                    data_file,
+                                    fernet_key_bytes,
+                                    extracted_filetype_path,
+                                    file_type,
+                                ),
+                            )
                         )
                     pool.close()
                     pool.join()
                 else:
                     pool = Pool(num_proc)
                     for data_file in self.data_files[file_type]:
-                        pool.apply_async(
-                            func=extract_func,
-                            args=(
-                                data_file,
-                                extracted_filetype_path,
-                            ),
+                        results.append(
+                            pool.apply_async(
+                                func=extract_func,
+                                args=(
+                                    data_file,
+                                    extracted_filetype_path,
+                                ),
+                            )
                         )
                     pool.close()
                     pool.join()
+                # get() re-raises any extraction error instead of dropping
+                # the file
+                extracted_files = [result.get() for result in results]
                 logger.info(f"Extracted text files are stored in directory " f"{extracted_filetype_path}")
 
-                # look for extracted txt files
-                self.data_files[file_type] = find_files_with_suffix(extracted_filetype_path, ".txt")[".txt"]
+                # load only the txt files extracted by this run, not other
+                # files left in the shared extraction directory (documents
+                # with the same lower-cased name share one output file)
+                self.data_files[file_type] = list(dict.fromkeys(extracted_files))
 
         # load text dataset, one text file as one sample
         logger.info(f"Loading dataset with num_proc: {num_proc}")
@@ -288,8 +314,11 @@ class TextFormatter(LocalFormatter):
             tmp_paths = []
             tmp_dir = get_secure_tmpdir()
             for ext, paths in self.data_files.items():
-                # PDF/DOCX files have already been extracted to .txt above;
-                # the remaining types need decryption here.
+                # PDF/DOCX files have already been decrypted and extracted to
+                # .txt above; the remaining types need decryption here.
+                if ext in (".docx", ".pdf"):
+                    decrypted_data_files[ext.strip(".")] = paths
+                    continue
                 tmp_file_paths = []
                 for p in paths:
                     data = decrypt_file_to_bytes(p, fernet)
@@ -313,6 +342,7 @@ class TextFormatter(LocalFormatter):
                         os.remove(tp)
                     except OSError:
                         pass
+                extract_tmp_dir.cleanup()
         else:
             datasets = load_dataset(
                 "text",
