@@ -660,6 +660,23 @@ class DatasetBuilderTest(DataJuicerTestCaseBase):
         ds = builder.load_dataset()
         self.assertEqual(len(ds), 3)
 
+    def test_max_sample_num_source_with_zero_allocation(self):
+        """A source allocated no samples contributes none to the budget."""
+        cfg = Namespace()
+        cfg.dataset = {
+            'configs': [
+                {'type': 'local', 'path': 'test_data/sample.jsonl', 'weight': 1.0}
+                for _ in range(3)
+            ],
+            'max_sample_num': 2
+        }
+
+        builder = DatasetBuilder(cfg)
+        self.assertEqual(builder.sample_numbers, [1, 1, 0])
+
+        ds = builder.load_dataset()
+        self.assertEqual(len(ds), 2)
+
     def test_invalid_validators(self):
         cfg = Namespace()
         cfg.generated_dataset_config = {

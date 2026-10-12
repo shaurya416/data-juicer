@@ -269,6 +269,17 @@ class RandomSelectorTest(DataJuicerTestCaseBase):
                              select_num=4)
         self._run_random_selector(dataset, tgt_num, op)
 
+    def test_ratio_rounding_to_zero_selects_nothing(self):
+        dataset = Dataset.from_list([{'text': f'row {i}'} for i in range(5)])
+        # int(0.1 * 5) == 0 samples are requested, not the whole dataset
+        self._run_random_selector(dataset, 0,
+                                  RandomSelector(select_ratio=0.1))
+        self._run_random_selector(dataset, 0,
+                                  RandomSelector(select_ratio=0.0))
+        self._run_random_selector(dataset, 0,
+                                  RandomSelector(select_ratio=0.0,
+                                                 select_num=3))
+
 
 if __name__ == '__main__':
     unittest.main()

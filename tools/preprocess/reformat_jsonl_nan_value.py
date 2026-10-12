@@ -83,13 +83,17 @@ def main(src_dir, target_dir, num_proc=1):
 
     pool = Pool(num_proc)
     features = get_non_nan_features(src_dir)
+    results = []
     for fp in fp_iter(src_dir):
         print(fp)
         jsonl_fp = os.path.join(target_dir, fp.name)
-        pool.apply_async(reformat_jsonl, args=(str(fp), jsonl_fp, features))
+        results.append(pool.apply_async(reformat_jsonl, args=(str(fp), jsonl_fp, features)))
 
     pool.close()
     pool.join()
+    # re-raise any worker error instead of leaving its output missing
+    for result in results:
+        result.get()
 
 
 if __name__ == "__main__":

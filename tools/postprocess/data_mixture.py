@@ -1,6 +1,6 @@
 import argparse
 
-from data_juicer.core.data.dataset_builder import DatasetBuilder
+from data_juicer.core.data.dataset_builder import DatasetBuilder, rewrite_cli_datapath
 from data_juicer.core.exporter import Exporter
 
 
@@ -60,7 +60,13 @@ def run_mixture():
     """
     args = parse_args()
     data_path = " ".join(args.data_path)
-    args.dataset_path = data_path
+    if args.max_samples is None:
+        args.dataset_path = data_path
+    else:
+        # dataset_path carries no sample budget, so the weights would be
+        # ignored and every sample of every dataset kept
+        args.dataset = rewrite_cli_datapath(data_path)
+        args.dataset["max_sample_num"] = args.max_samples
     dataset_builder = DatasetBuilder(args)
     dataset = dataset_builder.load_dataset(num_proc=args.num_proc)
     exporter = Exporter(

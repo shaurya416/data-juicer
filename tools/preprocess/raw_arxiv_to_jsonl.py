@@ -127,19 +127,25 @@ def main(arxiv_src_dir, target_dir, work_dir="./tmp/", num_proc=1):
 
     # convert in multiprocess
     pool = Pool(num_proc)
+    results = []
     for tar_fp in tar_fp_iter(arxiv_src_dir):
         logger.info(f"Start to process {tar_fp}")
         jsonl_fp = os.path.join(target_dir, tar_fp.name.replace(".tar", ".jsonl"))
-        pool.apply_async(
-            convert_tar_to_jsonl,
-            args=(
-                tar_fp,
-                jsonl_fp,
-                work_dir,
-            ),
+        results.append(
+            pool.apply_async(
+                convert_tar_to_jsonl,
+                args=(
+                    tar_fp,
+                    jsonl_fp,
+                    work_dir,
+                ),
+            )
         )
     pool.close()
     pool.join()
+    # re-raise any worker error instead of leaving its output incomplete
+    for result in results:
+        result.get()
 
 
 if __name__ == "__main__":

@@ -64,12 +64,16 @@ def main(src_dir, target_dir, suffixes=[".csv"], is_tsv=False, keep_default_na=F
         suffixes = [suffixes]
 
     pool = Pool(num_proc)
+    results = []
     for suffix in suffixes:
         for fp in fp_iter(src_dir, suffix):
             jsonl_fp = os.path.join(target_dir, fp.name.replace(suffix, ".jsonl"))
-            pool.apply_async(reformat_nan_value, args=(str(fp), jsonl_fp, keep_default_na, kwargs))
+            results.append(pool.apply_async(reformat_nan_value, args=(str(fp), jsonl_fp, keep_default_na, kwargs)))
     pool.close()
     pool.join()
+    # re-raise any worker error instead of leaving its output missing
+    for result in results:
+        result.get()
 
 
 if __name__ == "__main__":

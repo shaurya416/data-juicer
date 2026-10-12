@@ -59,6 +59,17 @@ class RandomSampleTest(DataJuicerTestCaseBase):
         result = random_sample(ds, weight=0.0, sample_number=0)
         self.assertEqual(len(result), 0)
 
+    def test_zero_sample_number_selects_nothing(self):
+        """An explicit sample_number of 0 is not a request for the weight."""
+        ds = self._make_dataset(10)
+        result = random_sample(ds, weight=1.0, sample_number=0)
+        self.assertEqual(len(result), 0)
+
+    def test_negative_sample_number_raises(self):
+        ds = self._make_dataset(10)
+        with self.assertRaises(ValueError):
+            random_sample(ds, sample_number=-1)
+
     def test_fractional_weight_rounds_up(self):
         """np.ceil ensures partial rows round up."""
         ds = self._make_dataset(10)

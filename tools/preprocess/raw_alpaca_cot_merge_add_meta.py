@@ -488,11 +488,15 @@ def main(src_dir, target_dir, num_proc=4):
 
     pool = Pool(num_proc)
 
+    results = []
     for fp in fp_iter(src_dir):
-        pool.apply_async(merge_and_add_meta, args=(str(fp), target_dir))
+        results.append(pool.apply_async(merge_and_add_meta, args=(str(fp), target_dir)))
 
     pool.close()
     pool.join()
+    # re-raise any worker error instead of leaving its output missing
+    for result in results:
+        result.get()
 
 
 if __name__ == "__main__":

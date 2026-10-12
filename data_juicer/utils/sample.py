@@ -3,11 +3,11 @@ from itertools import chain, repeat
 import numpy as np
 
 
-def random_sample(dataset, weight=1.0, sample_number=0, seed=None):
+def random_sample(dataset, weight=1.0, sample_number=None, seed=None):
     """
     Randomly sample a subset from a dataset with weight or number,
-    if sample number is bigger than 0, we will use sample
-    number instead of weight.
+    if sample number is given, we will use sample number instead of
+    weight. A sample number of 0 selects no samples.
     :param dataset: a HuggingFace dataset
     :param weight: sample ratio of dataset
     :param sample_number: sample number of dataset
@@ -18,8 +18,10 @@ def random_sample(dataset, weight=1.0, sample_number=0, seed=None):
         seed = 42
 
     ds_samples = dataset.num_rows
-    if sample_number <= 0:
+    if sample_number is None:
         sample_number = int(np.ceil(ds_samples * weight))
+    elif sample_number < 0:
+        raise ValueError(f"sample_number must be non-negative, got {sample_number}")
 
     if sample_number == ds_samples:
         return dataset

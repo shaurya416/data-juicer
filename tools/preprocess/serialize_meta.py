@@ -67,13 +67,17 @@ def main(src_dir, target_dir, text_key="text", serialized_key="source_info", num
         os.makedirs(target_dir, exist_ok=True)
 
     pool = Pool(num_proc)
+    results = []
     for fp in fp_iter(src_dir):
         print(fp)
         jsonl_fp = os.path.join(target_dir, fp.name)
-        pool.apply_async(meta_serialize, args=(str(fp), jsonl_fp, text_key, serialized_key))
+        results.append(pool.apply_async(meta_serialize, args=(str(fp), jsonl_fp, text_key, serialized_key)))
 
     pool.close()
     pool.join()
+    # re-raise any worker error instead of leaving its output incomplete
+    for result in results:
+        result.get()
 
 
 if __name__ == "__main__":
