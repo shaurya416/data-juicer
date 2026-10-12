@@ -117,6 +117,32 @@ class TextFormatterTest(DataJuicerTestCaseBase):
 
             self.assertEqual(ds["text"], ["second dataset document"])
 
+    def test_docx_with_same_name_in_different_directories_are_all_loaded(self):
+        """Documents whose names differ only by directory or case each keep
+        their own extracted text instead of overwriting one another."""
+        try:
+            from docx import Document
+        except ImportError:
+            self.skipTest("python-docx not installed")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            src_dir = os.path.join(tmp, "docs")
+            for sub, name in (("x", "Report.docx"), ("y", "report.docx"), ("y", "REPORT.docx")):
+                os.makedirs(os.path.join(src_dir, sub), exist_ok=True)
+                doc = Document()
+                doc.add_paragraph(f"report {sub}/{name}")
+                doc.save(os.path.join(src_dir, sub, name))
+
+            cache_home = os.path.join(tmp, "cache")
+            with patch("data_juicer.format.text_formatter.DATA_JUICER_CACHE_HOME", cache_home):
+                formatter = TextFormatter(src_dir, suffixes=[".docx"])
+                ds = formatter.load_dataset(num_proc=1)
+
+            self.assertEqual(
+                sorted(ds["text"]),
+                ["report x/Report.docx", "report y/REPORT.docx", "report y/report.docx"],
+            )
+
 
 # ---------------------------------------------------------------------------
 # Tests for the decrypt_after_reading multiprocessing path

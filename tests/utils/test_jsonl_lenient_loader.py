@@ -174,6 +174,49 @@ class JsonlLenientLoaderTest(DataJuicerTestCaseBase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0][Fields.suffix], ".jsonl.zst")
 
+    def test_invalid_utf8_line_skipped(self):
+        """A line that is not valid UTF-8 is skipped like any other bad line;
+        the lines after it and the remaining files are still loaded."""
+        import gzip
+
+        import zstandard as zstd_mod
+
+        raw = (
+            json.dumps({"t": "first"}).encode("utf-8")
+            + b"\n"
+            + b'{"t": "bad \xff\xfe bytes"}\n'
+            + json.dumps({"t": "héllo 中文"}, ensure_ascii=False).encode("utf-8")
+            + b"\n"
+        )
+        plain_path = os.path.join(self.tmp_dir, "plain.jsonl")
+        with open(plain_path, "wb") as f:
+            f.write(raw)
+        gz_path = os.path.join(self.tmp_dir, "comp.jsonl.gz")
+        with gzip.open(gz_path, "wb") as f:
+            f.write(raw)
+        zst_path = os.path.join(self.tmp_dir, "comp.jsonl.zst")
+        with open(zst_path, "wb") as f:
+            f.write(zstd_mod.ZstdCompressor().compress(raw))
+        tail_path = os.path.join(self.tmp_dir, "tail.jsonl")
+        with open(tail_path, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"t": "last"}) + "\n")
+
+        rows = list(
+            iter_lenient_jsonl_records(
+                [
+                    (plain_path, ".jsonl"),
+                    (gz_path, ".jsonl.gz"),
+                    (zst_path, ".jsonl.zst"),
+                    (tail_path, ".jsonl"),
+                ],
+                add_suffix_column=False,
+            )
+        )
+        self.assertEqual(
+            [row["t"] for row in rows],
+            ["first", "héllo 中文"] * 3 + ["last"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

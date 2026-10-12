@@ -377,6 +377,69 @@ class CacheCompressFailureTest(DataJuicerTestCaseBase):
             self.assertFalse(os.path.exists(raw_files[1] + '.zstd'))
             self.assertTrue(os.path.exists(raw_files[1]))
 
+    def test_interrupted_compress_is_not_taken_for_a_finished_one(self):
+        import tempfile
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from data_juicer.utils.compress import (CacheCompressManager,
+                                                ZstdCompressor)
+
+        def write_partial_then_fail(input_path, output_path):
+            with open(output_path, 'wb') as f:
+                f.write(b'partial')
+            raise OSError(28, 'No space left on device')
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            raw_file = os.path.join(tmpdir, 'cache-0.arrow')
+            content = b'arrow data ' * 1000
+            with open(raw_file, 'wb') as f:
+                f.write(content)
+            prev_ds = SimpleNamespace(cache_files=[{'filename': raw_file}])
+            manager = CacheCompressManager(compressor_format='zstd')
+
+            with patch.object(ZstdCompressor, 'compress',
+                              side_effect=write_partial_then_fail):
+                with self.assertRaises(OSError):
+                    manager.compress(prev_ds, None, num_proc=1)
+            self.assertFalse(os.path.exists(raw_file + '.zstd'))
+            self.assertTrue(os.path.exists(raw_file))
+
+            # the next run compresses the cache file again instead of
+            # trusting a partial file and removing the raw cache
+            manager.compress(prev_ds, None, num_proc=1)
+            self.assertFalse(os.path.exists(raw_file))
+            manager.compress_manager.decompress(raw_file + '.zstd', raw_file)
+            with open(raw_file, 'rb') as f:
+                self.assertEqual(f.read(), content)
+            self.assertEqual(sorted(os.listdir(tmpdir)),
+                             ['cache-0.arrow', 'cache-0.arrow.zstd'])
+
+    def test_interrupted_decompress_leaves_no_partial_cache_file(self):
+        import tempfile
+        from unittest.mock import patch
+        from data_juicer.utils.compress import CompressManager, Extractor
+
+        def write_partial_then_fail(input_path, output_path):
+            with open(output_path, 'wb') as f:
+                f.write(b'partial')
+            raise OSError(28, 'No space left on device')
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            raw_file = os.path.join(tmpdir, 'cache-0.arrow')
+            with open(raw_file, 'wb') as f:
+                f.write(b'arrow data ' * 1000)
+            manager = CompressManager(compressor_format='zstd')
+            manager.compress(raw_file, raw_file + '.zstd')
+            os.remove(raw_file)
+
+            with patch.object(Extractor.extractors['zstd'], 'extract',
+                              side_effect=write_partial_then_fail):
+                with self.assertRaises(OSError):
+                    manager.decompress(raw_file + '.zstd', raw_file)
+            # a partial raw cache file would be loaded as-is by later runs
+            self.assertFalse(os.path.exists(raw_file))
+            self.assertEqual(os.listdir(tmpdir), ['cache-0.arrow.zstd'])
+
 
 if __name__ == '__main__':
     unittest.main()

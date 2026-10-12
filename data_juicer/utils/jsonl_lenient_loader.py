@@ -24,8 +24,11 @@ JSONL_LENIENT_EXTENSIONS = frozenset({".jsonl", ".jsonl.gz", ".jsonl.zst"})
 
 
 def _iter_text_lines(path: str) -> Iterator[str]:
+    # Bytes that are not valid UTF-8 are decoded to lone surrogates instead of
+    # raising, so one bad line does not abort the whole file; the caller
+    # skips such lines.
     if path.endswith(".jsonl.gz"):
-        with gzip.open(path, "rt", encoding="utf-8", newline="") as handle:
+        with gzip.open(path, "rt", encoding="utf-8", errors="surrogateescape", newline="") as handle:
             yield from handle
     elif path.endswith(".jsonl.zst"):
         with open(path, "rb") as compressed:
@@ -34,11 +37,12 @@ def _iter_text_lines(path: str) -> Iterator[str]:
                 text_stream = io.TextIOWrapper(
                     reader,
                     encoding="utf-8",
+                    errors="surrogateescape",
                     newline="",
                 )
                 yield from text_stream
     else:
-        with open(path, "r", encoding="utf-8", newline="") as handle:
+        with open(path, "r", encoding="utf-8", errors="surrogateescape", newline="") as handle:
             yield from handle
 
 
@@ -75,6 +79,12 @@ def iter_lenient_jsonl_records(
         for lineno, line in enumerate(line_iter, 1):
             chunk = line.strip()
             if not chunk:
+                continue
+            try:
+                chunk.encode("utf-8")
+            except UnicodeEncodeError:
+                skipped += 1
+                _logger.warning(f"[lenient jsonl] skip {path}:{lineno}: invalid UTF-8")
                 continue
             try:
                 obj = json.loads(chunk)

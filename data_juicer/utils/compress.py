@@ -31,6 +31,27 @@ class FileLock(HF_FileLock):
         return None
 
 
+def _write_atomically(write, output_path: Union[Path, str]):
+    """
+    Call ``write(tmp_path)`` and move its result to *output_path* only once it
+    has completed, so that an interrupted or failed write never leaves a
+    partial file at *output_path* that is later taken for a complete one.
+
+    :param write: callable that writes its output to the given path.
+    :param output_path: final path of the output.
+    """
+    tmp_path = f"{output_path}.tmp"
+    try:
+        result = write(tmp_path)
+        os.replace(tmp_path, output_path)
+        return result
+    finally:
+        if os.path.isdir(tmp_path):
+            shutil.rmtree(tmp_path, ignore_errors=True)
+        elif os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
 class Extractor(HF_Extractor):
     """
     Extract content from a compressed file.
@@ -57,7 +78,7 @@ class Extractor(HF_Extractor):
         with FileLock(lock_path):
             shutil.rmtree(output_path, ignore_errors=True)
             extractor = cls.extractors[extractor_format]
-            return extractor.extract(input_path, output_path)
+            return _write_atomically(lambda tmp_path: extractor.extract(input_path, tmp_path), output_path)
 
 
 class BaseCompressor(ABC):
@@ -177,7 +198,7 @@ class Compressor:
         with FileLock(lock_path):
             shutil.rmtree(output_path, ignore_errors=True)
             compressor = cls.compressors[compressor_format]
-            compressor.compress(input_path, output_path)
+            _write_atomically(lambda tmp_path: compressor.compress(input_path, tmp_path), output_path)
 
 
 class CompressManager:

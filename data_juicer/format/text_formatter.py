@@ -47,6 +47,18 @@ def _decrypt_and_extract(data_file, fernet_key_bytes, extracted_filetype_path, f
         return extract_txt_from_pdf(buf, extracted_filetype_path)
 
 
+def _extracted_txt_name(fn, file_type):
+    """
+    Name of the text file that the text extracted from *fn* is written to.
+
+    :param fn: path to the input file, or a file-like object exposing a
+        ``.name`` attribute.
+    :param file_type: ``".docx"`` or ``".pdf"``.
+    """
+    name = fn.name if hasattr(fn, "name") else fn
+    return os.path.basename(name).lower().replace(file_type, ".txt")
+
+
 def extract_txt_from_docx(fn, tgt_path):
     """
     Extract text from a docx file and save to target path.
@@ -59,13 +71,7 @@ def extract_txt_from_docx(fn, tgt_path):
     docx = LazyLoader("docx", "python-docx")
     doc = docx.Document(fn)
     text = [para.text for para in doc.paragraphs if para.text.strip()]
-    # Derive the output filename from fn; fall back to a generic name for
-    # file-like objects that expose a .name attribute.
-    if hasattr(fn, "name"):
-        base_fn = os.path.basename(fn.name).lower().replace(".docx", ".txt")
-    else:
-        base_fn = os.path.basename(fn).lower().replace(".docx", ".txt")
-    txt_path = os.path.join(tgt_path, base_fn)
+    txt_path = os.path.join(tgt_path, _extracted_txt_name(fn, ".docx"))
     with open(txt_path, "w") as f:
         f.write("\n".join(text))
     return txt_path
@@ -95,11 +101,7 @@ def extract_txt_from_pdf(fn, tgt_path):
                 page_text = page_text.rstrip()[: -len(page_num)]
             if page_text.strip():
                 text.append(page_text)
-        if hasattr(fn, "name"):
-            base_fn = os.path.basename(fn.name).lower().replace(".pdf", ".txt")
-        else:
-            base_fn = os.path.basename(fn).lower().replace(".pdf", ".txt")
-        txt_path = os.path.join(tgt_path, base_fn)
+        txt_path = os.path.join(tgt_path, _extracted_txt_name(fn, ".pdf"))
         with open(txt_path, "w") as f:
             f.write("\n".join(text))
         return txt_path
@@ -250,6 +252,22 @@ class TextFormatter(LocalFormatter):
 
                 extract_func = extract_txt_from_docx if file_type == ".docx" else extract_txt_from_pdf
 
+                # documents whose extracted names coincide (the same file name
+                # in different directories, or names differing only in case)
+                # are extracted into numbered sub-directories, so that no
+                # document overwrites the text of another
+                name_counts = {}
+                target_dirs = []
+                for data_file in self.data_files[file_type]:
+                    txt_name = _extracted_txt_name(data_file, file_type)
+                    n_seen = name_counts.get(txt_name, 0)
+                    name_counts[txt_name] = n_seen + 1
+                    target_dir = extracted_filetype_path
+                    if n_seen:
+                        target_dir = os.path.join(extracted_filetype_path, str(n_seen))
+                        os.makedirs(target_dir, exist_ok=True)
+                    target_dirs.append(target_dir)
+
                 results = []
                 if decrypt and fernet is not None:
                     # Decrypt each file in-memory and extract text in parallel.
@@ -259,14 +277,14 @@ class TextFormatter(LocalFormatter):
                     # independently.
                     fernet_key_bytes = base64.urlsafe_b64encode(fernet._signing_key + fernet._encryption_key)
                     pool = Pool(num_proc)
-                    for data_file in self.data_files[file_type]:
+                    for data_file, target_dir in zip(self.data_files[file_type], target_dirs):
                         results.append(
                             pool.apply_async(
                                 func=_decrypt_and_extract,
                                 args=(
                                     data_file,
                                     fernet_key_bytes,
-                                    extracted_filetype_path,
+                                    target_dir,
                                     file_type,
                                 ),
                             )
@@ -275,13 +293,13 @@ class TextFormatter(LocalFormatter):
                     pool.join()
                 else:
                     pool = Pool(num_proc)
-                    for data_file in self.data_files[file_type]:
+                    for data_file, target_dir in zip(self.data_files[file_type], target_dirs):
                         results.append(
                             pool.apply_async(
                                 func=extract_func,
                                 args=(
                                     data_file,
-                                    extracted_filetype_path,
+                                    target_dir,
                                 ),
                             )
                         )
@@ -293,9 +311,8 @@ class TextFormatter(LocalFormatter):
                 logger.info(f"Extracted text files are stored in directory " f"{extracted_filetype_path}")
 
                 # load only the txt files extracted by this run, not other
-                # files left in the shared extraction directory (documents
-                # with the same lower-cased name share one output file)
-                self.data_files[file_type] = list(dict.fromkeys(extracted_files))
+                # files left in the shared extraction directory
+                self.data_files[file_type] = extracted_files
 
         # load text dataset, one text file as one sample
         logger.info(f"Loading dataset with num_proc: {num_proc}")
